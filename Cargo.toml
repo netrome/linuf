@@ -1,0 +1,16 @@
+[package]
+name = "linuf"
+version = "0.1.0"
+edition = "2021"
+description = "A playful terminal alphabet-and-sound toy for kids (Swedish phonics + best-effort speech synthesis)"
+
+[dependencies]
+# TUI + input. ratatui re-exports crossterm (`ratatui::crossterm`), so we don't
+# depend on crossterm separately — that guarantees the versions stay in sync.
+ratatui = "0.29"
+# Giant colorful glyphs for the current "word".
+tui-big-text = "0.7"
+# Audio playback. Pulls in cpal, which on Linux needs the ALSA dev headers at
+# build time (libasound2-dev / alsa-lib-devel — see the README).
+rodio = "0.20"
+anyhow = "1"
