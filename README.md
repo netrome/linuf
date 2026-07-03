@@ -2,18 +2,21 @@
 
 A playful terminal alphabet-and-sound toy for a small kid.
 
-Press a letter → it appears in giant colorful glyphs and its **sound** plays.
-Press **Enter** → the whole "word" is spoken out loud. It doesn't matter whether
-it's a real word or a random jumble like `linuf` — it gets pronounced either way.
+Press a letter → it appears in giant colorful glyphs and its **name** is read
+aloud (Swedish: "be", "se", "ex", "ö", …). Press **Enter** → the whole "word" is
+spoken out loud. It doesn't matter whether it's a real word or a random jumble
+like `linuf` — it gets pronounced either way.
 
 > Named after playing with my son Linus's name — writing and pronouncing silly
 > variations of it, which he finds hilarious.
 
 ## What it does
 
-- **Per-letter sounds (phonics).** Each keystroke plays the letter's *sound*
-  (like `mmm`, `aaa`) rather than its alphabet name (`emm`, `aa`) — because
-  sounds blend into words and names don't. Swedish alphabet, incl. `å ä ö`.
+- **Per-letter sounds.** Each keystroke reads the letter's Swedish *name*
+  aloud. (We started with phonics sounds — `mmm`, `aaa` — but isolated
+  consonants synthesize almost inaudibly; letter names are full syllables and
+  come out uniformly loud and clear. See the design notes.) Swedish alphabet,
+  incl. `å ä ö`.
 - **Whole-word speech on Enter.** The typed string is synthesized and spoken.
 - **Real words *and* nonsense both work.** This falls out of the design (see
   below) — there's no "is this a real word?" check.
@@ -43,25 +46,39 @@ enter  ───┘             (offline, g2p)         (in memory)
 
 | Decision            | Choice                        | Why |
 |---------------------|-------------------------------|-----|
-| Per-letter audio    | **Phonics sounds**            | Blend into words; best for early reading |
+| Per-letter audio    | **Letter names**              | Full syllables → uniformly loud; no per-consonant tuning |
 | Whole-word TTS      | **espeak-ng**                 | Tiny, instant, offline, g2p → nonsense works. Robotic but intelligible |
-| Terminal UI         | **Ratatui + tui-big-text**    | Big colorful glyphs delight a small kid |
+| Terminal UI         | **Ratatui + font8x8**         | Big colorful glyphs delight a small kid |
 
-### The one hand-tuned part: `src/pronunciation.rs`
+### Why letter names instead of phonics
 
-Getting a clean *isolated* consonant sound is the only fiddly bit. A bare "b"
-gets read as the letter name "be", so consonants use espeak's phoneme input
-(`[[b@]]` ≈ "buh"). Vowels are easy — in Swedish the letter name already *is*
-the sound, so we feed the plain letter.
+The original plan was phonics — play each letter's *sound* so they blend into
+words. The catch: espeak synthesizes an isolated consonant like /n/ almost
+silently. Measured RMS loudness of a bare `[[n]]` was ~300 vs. ~2500 for a
+vowel — about 10× quieter, effectively inaudible. Adding a schwa (`[[n@]]`, i.e.
+"nuh") fixes the loudness but is fiddly to tune per-letter by ear.
 
-**This table is meant to be tuned by ear.** If a letter sounds off, edit its
-string in `src/pronunciation.rs`. You can test a sound without rebuilding:
+Feeding espeak the **plain letter** instead makes it say the letter's name
+("be", "en", "ex", …). Names are full syllables, so every letter is loud and
+clear with zero tuning. That's the current behavior.
+
+`src/pronunciation.rs` is still the seam: it maps a typed letter to the text we
+hand espeak. To customize one letter (or bring back phonics for some), special-
+case it there. Test any change without rebuilding:
 
 ```sh
-espeak-ng -v sv "[[b@]]"   # a consonant sound
-espeak-ng -v sv "a"        # a vowel sound
+espeak-ng -v sv "x"        # a letter name  → "ex"
+espeak-ng -v sv "[[n@]]"   # a phonics sound → "nuh"
 espeak-ng -v sv "linuf"    # a whole word
 ```
+
+### Rendering å ä ö
+
+The giant glyphs come from the `font8x8` bitmap font. We render them ourselves
+(in `src/ui.rs`) rather than via the `tui-big-text` crate, because that crate
+only looks glyphs up in font8x8's ASCII block — so `å ä ö` come out blank. We
+fall back to font8x8's LATIN block, which contains them. (A unit test asserts
+every Swedish uppercase letter, including Å Ä Ö, has a non-blank glyph.)
 
 ## Requirements
 
@@ -93,20 +110,11 @@ cargo run --release
 
 | Key            | Action                          |
 |----------------|---------------------------------|
-| a–ö            | Add letter + play its sound     |
+| a–ö            | Add letter + say its name       |
 | Enter          | Speak the whole word            |
 | Space          | Clear the word (reset)          |
 | Backspace      | Delete last letter              |
 | Esc / Ctrl-C   | Quit                            |
-
-## Known gotchas
-
-- **`tui-big-text` version drift.** If `cargo build` complains that
-  `.build()` in `src/ui.rs` returns a `Result`, that version wants
-  `.build()?`. Older ones returned a `Result`; newer ones return the widget
-  directly. One-character fix.
-- This scaffold hasn't been compiled on the machine it was written on (no audio
-  stack / ALSA headers there). Expect to iterate a little on first `cargo build`.
 
 ## Roadmap / ideas
 
@@ -114,6 +122,8 @@ cargo run --release
   (neural, natural-sounding Swedish; it even uses espeak-ng as its phonemizer).
   The `Speaker` in `src/audio.rs` is the only thing that would change.
 - **Your own voice:** replace per-letter synthesis with recorded clips.
+- **Phonics mode:** a toggle to switch per-letter audio from names back to
+  sounds (using the `[[X@]]` schwa forms so they're audible) for reading practice.
 - **Interrupt vs. overlap:** currently sounds overlap when keys are mashed; hold
   a single `Sink` and `stop()` it to make new sounds cut off older ones.
 - Per-letter colors, little animations, a "say it again" key, etc.
