@@ -30,6 +30,13 @@ const PALETTE: [Color; 6] = [
 const GLYPH_H: u16 = 8; // font8x8 glyphs are 8 rows tall
 const CELL_W: u16 = 9; // 8 pixel columns + 1 gap column between letters
 
+/// How many glyphs fit horizontally in an inner area `width` columns wide.
+/// Callers use this to stop the word before it overflows the screen — both when
+/// accepting new letters (`main.rs`) and when rendering after a resize (below).
+pub fn capacity(width: u16) -> usize {
+    (width / CELL_W) as usize
+}
+
 pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
@@ -47,6 +54,13 @@ pub fn render(frame: &mut Frame, app: &App) {
     } else {
         app.word.to_uppercase()
     };
+    // Never draw more glyphs than fit: `main.rs` already caps input for the
+    // current size, but a mid-word terminal shrink could still leave the word
+    // too long, so clamp here too (keep at least one so "?" always shows).
+    let display: String = display
+        .chars()
+        .take(capacity(inner.width).max(1))
+        .collect();
     let color = PALETTE[app.word.chars().count() % PALETTE.len()];
 
     let text_w = display.chars().count() as u16 * CELL_W;

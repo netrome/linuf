@@ -67,11 +67,21 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, speaker: &mut Speaker) -> 
             KeyCode::Char(' ') => app.clear(),
             KeyCode::Backspace => app.backspace(),
 
-            // Any letter (including å ä ö): show it and play its phonics sound.
+            // Any letter (including å ä ö): show it and play its phonics sound —
+            // but only while there's room on screen, so a kid mashing keys can't
+            // push glyphs off the edge. The cap follows the current terminal
+            // width (borders take 2 columns); when it's reached we play nothing
+            // and show a gentle hint instead.
             KeyCode::Char(c) if c.is_alphabetic() => {
+                let width = terminal.size().map(|s| s.width).unwrap_or(0);
+                let cap = ui::capacity(width.saturating_sub(2));
                 // char::to_lowercase can yield multiple chars in theory; in
                 // practice for our alphabet it's always one.
                 for lc in c.to_lowercase() {
+                    if app.word.chars().count() >= cap {
+                        app.status = Some("Skärmen är full — tryck mellanslag för att rensa".into());
+                        break;
+                    }
                     app.push(lc);
                     if let Err(e) = speaker.speak_letter(lc) {
                         app.status = Some(format!("{e:#}"));
