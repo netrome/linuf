@@ -22,6 +22,9 @@ like `linuf` — it gets pronounced either way.
   below) — there's no "is this a real word?" check.
 - **Big, colorful, terminal-native.** Giant glyphs, a color that changes as the
   word grows. Fun for a 3-year-old; runs anywhere a Linux terminal does.
+- **Paced, not punishing.** Leaning on one key gets slower and slower, while
+  reaching for a *different* letter stays instant — so the toy rewards exploring
+  the keyboard instead of mashing it (see below).
 
 ## How it works (design notes)
 
@@ -71,6 +74,41 @@ espeak-ng -v sv "x"        # a letter name  → "ex"
 espeak-ng -v sv "[[n@]]"   # a phonics sound → "nuh"
 espeak-ng -v sv "linuf"    # a whole word
 ```
+
+### Pacing: mashing vs. exploring
+
+Holding a key down makes the terminal deliver key-repeat events as fast as it
+can, and each one used to mean a redraw, a WAV decode and another mixer voice —
+enough to peg a core and spin up the fans. `src/throttle.rs` puts a minimum gap
+between presses the app is willing to act on, chosen so that *creative* play is
+never the thing that gets slowed down:
+
+| Input                     | Minimum gap | Effect |
+|---------------------------|-------------|--------|
+| A letter, different from the last | 150 ms | Type freely; sounds still overlap |
+| The **same** letter again  | 300 ms, then 450, 600 … up to 750 ms | Leaning on one key trickles |
+| Enter (speak the word)    | 500 ms      | At most twice a second |
+
+The same-letter penalty resets after a 1.5 s pause, so deliberate typing
+(`mamma`, `pappa`) never feels sluggish — only a *held* key does. Presses that
+arrive too early are dropped, not queued, so the toy never lags behind the
+keyboard; when a burst gets dropped the bottom line says so gently
+("Sakta lite — prova en annan bokstav!") instead of flashing an error.
+
+Two more cheap wins in the same spirit:
+
+- **Frames are only drawn when something changed.** Dropped key repeats cost
+  nothing at all now.
+- **Overlapping clips are capped** at 6 simultaneous sounds (`MAX_CONCURRENT` in
+  `src/audio.rs`).
+
+#### The chord easter egg
+
+A letter's name takes ~400–500 ms to say, but a *different* letter is allowed
+every 150 ms — so typing several letters quickly still layers them into a chord.
+That's deliberate: the fun of overlapping sounds survives, it's just no longer
+reachable by holding one key down. Mash `q w e r t`, get a chord; mash `qqqqq`,
+get one `q` at a time.
 
 ### Rendering å ä ö
 
@@ -124,6 +162,8 @@ cargo run --release
 - **Your own voice:** replace per-letter synthesis with recorded clips.
 - **Phonics mode:** a toggle to switch per-letter audio from names back to
   sounds (using the `[[X@]]` schwa forms so they're audible) for reading practice.
-- **Interrupt vs. overlap:** currently sounds overlap when keys are mashed; hold
-  a single `Sink` and `stop()` it to make new sounds cut off older ones.
+- **Interrupt vs. overlap:** currently up to 6 sounds overlap; keep a single
+  `Sink` and `stop()` it to make new sounds cut off older ones instead.
+- **A louder easter egg:** a hidden key that plays every letter of the word at
+  once, as one deliberate chord.
 - Per-letter colors, little animations, a "say it again" key, etc.

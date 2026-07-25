@@ -15,7 +15,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::App;
+use crate::app::{App, Status};
 
 /// Bright, high-contrast colors that cycle as the word grows.
 const PALETTE: [Color; 6] = [
@@ -73,7 +73,8 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // Help / status line pinned to the bottom row.
     let (help, help_color) = match &app.status {
-        Some(err) => (format!("⚠ {err}"), Color::Red),
+        Some(Status::Error(err)) => (format!("⚠ {err}"), Color::Red),
+        Some(Status::Hint(hint)) => (hint.clone(), Color::Yellow),
         None => (
             "Bokstav = ljud    Enter = säg ordet    Mellanslag = rensa    Esc = avsluta"
                 .to_string(),
