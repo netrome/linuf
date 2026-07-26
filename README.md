@@ -75,21 +75,44 @@ espeak-ng -v sv "[[n@]]"   # a phonics sound → "nuh"
 espeak-ng -v sv "linuf"    # a whole word
 ```
 
+### The WAV header espeak can't write
+
+A WAV file states its own length in its header, so a writer normally seeks back
+and fills that in once it knows. Writing to a pipe there's nothing to seek, so
+`espeak-ng --stdout` leaves a `0x7ffff000` (~2 GB) placeholder in both length
+fields instead — compare `espeak-ng -w file.wav`, which patches them properly.
+
+Taken at face value that placeholder is quietly ruinous. rodio believes the
+header, so a 0.9 s clip claims to be **13.5 hours** long and its decoder keeps
+handing out silence past the end of the real samples rather than finishing. A
+source that never finishes is a mixer voice that never gets cleaned up: it stays
+in the mix, inaudible, re-summed on every sample, forever. That — not the cost of
+reacting to a keypress — is what used to peg a core and spin up the fans.
+
+`repair_wav_sizes` in `src/audio.rs` rewrites both lengths to what actually
+arrived, so clips end when they should. Everything stays in memory; switching to
+`-w` would mean temp files. A unit test pins the bug in both directions.
+
 ### Pacing: mashing vs. exploring
 
 Holding a key down makes the terminal deliver key-repeat events as fast as it
-can, and each one used to mean a redraw, a WAV decode and another mixer voice —
-enough to peg a core and spin up the fans. `src/throttle.rs` puts a minimum gap
-between presses the app is willing to act on, chosen so that *creative* play is
-never the thing that gets slowed down:
+can, and each one means a redraw and another mixer voice. `src/throttle.rs` puts
+a minimum gap between presses the app is willing to act on, chosen so that
+*creative* play is never the thing that gets slowed down:
 
 | Input                     | Minimum gap | Effect |
 |---------------------------|-------------|--------|
-| A letter, different from the last | 150 ms | Type freely; sounds still overlap |
-| The **same** letter again  | 300 ms, then 450, 600 … up to 750 ms | Leaning on one key trickles |
-| Enter (speak the word)    | 500 ms      | At most twice a second |
+| A letter, different from the last | 60 ms | Type freely; sounds still overlap |
+| The **same** letter again  | 120 ms, then 180, 240 … up to 300 ms | Leaning on one key trickles |
+| Enter (speak the word)    | 300 ms      | Re-trigger while still listening |
 
-The same-letter penalty resets after a 1.5 s pause, so deliberate typing
+These gaps are deliberately loose. The first version of them was tuned against
+the leak described above, so they were far stricter than the work involved
+warrants; with a press costing little more than cached bytes and one decoder, the
+rates are set by what feels good to a small kid and `MAX_CONCURRENT` is what
+protects the CPU.
+
+The same-letter penalty resets after a 0.8 s pause, so deliberate typing
 (`mamma`, `pappa`) never feels sluggish — only a *held* key does. Presses that
 arrive too early are dropped, not queued, so the toy never lags behind the
 keyboard; when a burst gets dropped the bottom line says so gently
@@ -99,13 +122,14 @@ Two more cheap wins in the same spirit:
 
 - **Frames are only drawn when something changed.** Dropped key repeats cost
   nothing at all now.
-- **Overlapping clips are capped** at 6 simultaneous sounds (`MAX_CONCURRENT` in
-  `src/audio.rs`).
+- **Overlapping clips are capped** at 8 simultaneous sounds (`MAX_CONCURRENT` in
+  `src/audio.rs`). Reaching the cap drops a sound; it can't wedge shut, because
+  finished clips are reaped every time something is spoken.
 
 #### The chord easter egg
 
 A letter's name takes ~400–500 ms to say, but a *different* letter is allowed
-every 150 ms — so typing several letters quickly still layers them into a chord.
+every 60 ms — so typing several letters quickly still layers them into a chord.
 That's deliberate: the fun of overlapping sounds survives, it's just no longer
 reachable by holding one key down. Mash `q w e r t`, get a chord; mash `qqqqq`,
 get one `q` at a time.
@@ -162,7 +186,7 @@ cargo run --release
 - **Your own voice:** replace per-letter synthesis with recorded clips.
 - **Phonics mode:** a toggle to switch per-letter audio from names back to
   sounds (using the `[[X@]]` schwa forms so they're audible) for reading practice.
-- **Interrupt vs. overlap:** currently up to 6 sounds overlap; keep a single
+- **Interrupt vs. overlap:** currently up to 8 sounds overlap; keep a single
   `Sink` and `stop()` it to make new sounds cut off older ones instead.
 - **A louder easter egg:** a hidden key that plays every letter of the word at
   once, as one deliberate chord.

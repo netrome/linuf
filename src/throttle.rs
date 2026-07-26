@@ -1,31 +1,38 @@
 //! Rate limiting: how fast the toy is willing to react.
 //!
 //! Holding a key down makes the terminal deliver key-repeat events as fast as
-//! it can, and every one of them used to mean a redraw, a WAV decode and a
-//! fresh mixer voice — enough to spin up the laptop fans. So each kind of input
-//! goes through a `Gate` that enforces a minimum gap since the last *accepted*
-//! press; anything arriving early is simply dropped.
+//! it can, and every one of them means a redraw and a fresh mixer voice. So each
+//! kind of input goes through a `Gate` that enforces a minimum gap since the
+//! last *accepted* press; anything arriving early is simply dropped.
 //!
 //! Letters get one extra twist: pressing the **same** letter again and again
 //! widens its gate step by step, while switching to a different letter always
 //! gets the short base gap. So leaning on one key gets slower and slower, while
 //! exploring the keyboard stays quick and lively — including sounds overlapping
 //! into chords, which is half the fun.
+//!
+//! The gaps below are deliberately loose. The first version of this module was
+//! written against a CPU load that turned out to be a leak in `audio.rs` rather
+//! than the cost of reacting to a keypress; with that fixed, a press is cheap
+//! (cached bytes, one decoder) and the only thing worth defending against is a
+//! key-repeat flood. So these are set by what feels good to a small kid, and
+//! `MAX_CONCURRENT` is what actually protects the CPU.
 
 use std::time::{Duration, Instant};
 
-/// Shortest gap between two accepted letters.
-const LETTER_MIN: Duration = Duration::from_millis(150);
+/// Shortest gap between two accepted letters — short enough to feel instant.
+const LETTER_MIN: Duration = Duration::from_millis(60);
 /// Added to `LETTER_MIN` for each consecutive press of the *same* letter …
-const REPEAT_STEP: Duration = Duration::from_millis(150);
+const REPEAT_STEP: Duration = Duration::from_millis(60);
 /// … up to this ceiling, so a held-down key still trickles through instead of
 /// going completely dead (which would just read as "broken" to a small kid).
-const REPEAT_MAX: Duration = Duration::from_millis(750);
+const REPEAT_MAX: Duration = Duration::from_millis(300);
 /// A pause this long means someone is typing deliberately rather than mashing,
 /// so the same-letter penalty resets — "mamma" typed slowly never feels sluggish.
-const RELAX: Duration = Duration::from_millis(1500);
-/// Enter speaks the whole word: at most twice a second.
-const WORD_MIN: Duration = Duration::from_millis(500);
+const RELAX: Duration = Duration::from_millis(800);
+/// Enter speaks the whole word. Loose enough to re-trigger while still
+/// listening, since hearing the word again is usually the point.
+const WORD_MIN: Duration = Duration::from_millis(300);
 /// Cap on the same-letter streak — `REPEAT_MAX` is reached long before this, so
 /// it only exists to keep `REPEAT_STEP * streak` from ever overflowing.
 const STREAK_MAX: u32 = 8;
@@ -165,21 +172,21 @@ mod tests {
         let t = Instant::now();
         let mut th = Throttle::new();
         assert_eq!(th.letter('a', t), Decision::Allow);
-        assert_eq!(th.letter('b', at(t, 100)), Decision::Ignore);
-        assert_eq!(th.letter('b', at(t, 150)), Decision::Allow);
-        assert_eq!(th.letter('c', at(t, 300)), Decision::Allow);
+        assert_eq!(th.letter('b', at(t, 40)), Decision::Ignore);
+        assert_eq!(th.letter('b', at(t, 60)), Decision::Allow);
+        assert_eq!(th.letter('c', at(t, 120)), Decision::Allow);
     }
 
     #[test]
     fn holding_one_letter_gets_slower_and_slower() {
         let t = Instant::now();
         let mut th = Throttle::new();
-        assert_eq!(th.letter('a', t), Decision::Allow); // streak 1 → next needs 300ms
-        assert_eq!(th.letter('a', at(t, 150)), Decision::Allow); // streak 2 → next needs 450ms
-        assert_eq!(th.letter('a', at(t, 400)), Decision::Ignore); // only 250ms in
-        assert_eq!(th.letter('a', at(t, 450)), Decision::Allow);
-        assert_eq!(th.letter('a', at(t, 800)), Decision::Ignore); // only 350ms in
-        assert_eq!(th.letter('a', at(t, 900)), Decision::Allow); // 450ms in
+        assert_eq!(th.letter('a', t), Decision::Allow); // a repeat now needs 60ms
+        assert_eq!(th.letter('a', at(t, 60)), Decision::Allow); // streak 1 → needs 120ms
+        assert_eq!(th.letter('a', at(t, 160)), Decision::Ignore); // only 100ms in
+        assert_eq!(th.letter('a', at(t, 180)), Decision::Allow); // streak 2 → needs 180ms
+        assert_eq!(th.letter('a', at(t, 300)), Decision::Ignore); // only 120ms in
+        assert_eq!(th.letter('a', at(t, 360)), Decision::Allow); // 180ms in
     }
 
     #[test]
@@ -187,36 +194,38 @@ mod tests {
         let t = Instant::now();
         let mut th = Throttle::new();
         assert_eq!(th.letter('a', t), Decision::Allow);
-        assert_eq!(th.letter('a', at(t, 10)), Decision::Ignore);
-        assert_eq!(th.letter('a', at(t, 20)), Decision::Slow);
+        assert_eq!(th.letter('a', at(t, 5)), Decision::Ignore);
+        assert_eq!(th.letter('a', at(t, 10)), Decision::Slow);
         // …and then stays quiet for the rest of the burst.
-        assert_eq!(th.letter('a', at(t, 30)), Decision::Ignore);
-        assert_eq!(th.letter('a', at(t, 40)), Decision::Ignore);
+        assert_eq!(th.letter('a', at(t, 15)), Decision::Ignore);
+        assert_eq!(th.letter('a', at(t, 20)), Decision::Ignore);
     }
 
     #[test]
     fn a_different_letter_escapes_the_penalty() {
         let t = Instant::now();
         let mut th = Throttle::new();
-        // Build up a streak of three a's (gaps of 150, 300, 450ms).
-        for ms in [0, 150, 450, 900] {
+        // Build up a streak of three a's (gaps of 60, 120, 180ms).
+        for ms in [0, 60, 180, 360] {
             assert_eq!(th.letter('a', at(t, ms)), Decision::Allow);
         }
-        // Another 'a' would now have to wait 600ms; a 'b' only waits the base gap.
-        assert_eq!(th.letter('a', at(t, 1050)), Decision::Ignore);
-        assert_eq!(th.letter('b', at(t, 1050)), Decision::Allow);
+        // Another 'a' would now have to wait 240ms; a 'b' only waits the base gap.
+        assert_eq!(th.letter('a', at(t, 420)), Decision::Ignore);
+        assert_eq!(th.letter('b', at(t, 420)), Decision::Allow);
     }
 
     #[test]
     fn a_pause_resets_the_penalty() {
         let t = Instant::now();
         let mut th = Throttle::new();
-        for ms in [0, 150, 450] {
+        for ms in [0, 60, 180] {
             assert_eq!(th.letter('a', at(t, ms)), Decision::Allow);
         }
-        // After a proper pause the same letter is back to the base gap.
-        assert_eq!(th.letter('a', at(t, 450 + 1500)), Decision::Allow);
-        assert_eq!(th.letter('a', at(t, 450 + 1500 + 150)), Decision::Ignore);
+        // A repeat would need 180ms now, but after a proper pause the same letter
+        // is back to the base gap …
+        assert_eq!(th.letter('a', at(t, 180 + 800)), Decision::Allow);
+        // … and starts climbing again from there.
+        assert_eq!(th.letter('a', at(t, 180 + 800 + 60)), Decision::Ignore);
     }
 
     #[test]
@@ -226,19 +235,19 @@ mod tests {
         // Pressing the same letter at the ceiling rate never gets throttled,
         // however long the streak.
         for i in 0..20 {
-            assert_eq!(th.letter('a', at(t, i * 750)), Decision::Allow, "press {i}");
+            assert_eq!(th.letter('a', at(t, i * 300)), Decision::Allow, "press {i}");
         }
     }
 
     #[test]
-    fn enter_is_capped_at_twice_a_second() {
+    fn enter_is_rate_limited() {
         let t = Instant::now();
         let mut th = Throttle::new();
         assert_eq!(th.word(t), Decision::Allow);
-        assert_eq!(th.word(at(t, 300)), Decision::Ignore);
-        assert_eq!(th.word(at(t, 400)), Decision::Slow);
-        assert_eq!(th.word(at(t, 500)), Decision::Allow);
-        assert_eq!(th.word(at(t, 1000)), Decision::Allow);
+        assert_eq!(th.word(at(t, 150)), Decision::Ignore);
+        assert_eq!(th.word(at(t, 200)), Decision::Slow);
+        assert_eq!(th.word(at(t, 300)), Decision::Allow);
+        assert_eq!(th.word(at(t, 600)), Decision::Allow);
     }
 
     #[test]
@@ -248,7 +257,7 @@ mod tests {
         assert_eq!(th.word(t), Decision::Allow);
         // Mashing Enter must not hold letters back, or vice versa.
         assert_eq!(th.letter('a', t), Decision::Allow);
-        assert_eq!(th.word(at(t, 100)), Decision::Ignore);
-        assert_eq!(th.letter('b', at(t, 150)), Decision::Allow);
+        assert_eq!(th.word(at(t, 60)), Decision::Ignore);
+        assert_eq!(th.letter('b', at(t, 60)), Decision::Allow);
     }
 }
