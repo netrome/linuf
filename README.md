@@ -157,6 +157,8 @@ sudo dnf install espeak-ng alsa-lib-devel pkgconf-pkg-config
 sudo pacman -S espeak-ng alsa-lib pkgconf
 ```
 
+On Nix, skip all of the above — see [Nix / NixOS](#nix--nixos).
+
 - `espeak-ng` — the speech synthesizer (runtime).
 - `libasound2-dev` / `alsa-lib-devel` + `pkg-config` — ALSA dev headers that
   `rodio`/`cpal` need to **build** on Linux.
@@ -167,6 +169,33 @@ sudo pacman -S espeak-ng alsa-lib pkgconf
 ```sh
 cargo run --release
 ```
+
+### Nix / NixOS
+
+The repo is a flake. Try it without installing anything:
+
+```sh
+nix run github:<you>/linuf   # or `nix run .` from a checkout
+```
+
+The binary is wrapped so `espeak-ng` is always on its PATH — no other setup
+needed. To install permanently, add the flake as an input to your NixOS config
+and pick one of:
+
+```nix
+# flake.nix of your system config
+inputs.linuf.url = "github:<you>/linuf";
+
+# either: take the package directly
+environment.systemPackages = [ inputs.linuf.packages.${pkgs.system}.default ];
+
+# or: apply the overlay, then use pkgs.linuf anywhere
+nixpkgs.overlays = [ inputs.linuf.overlays.default ];
+```
+
+For development, `nix develop` drops you into a shell with cargo, rustc,
+rustfmt, clippy, rust-analyzer, espeak-ng, and the ALSA headers — `cargo run`
+just works from there.
 
 ### Controls
 
